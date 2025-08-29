@@ -1,0 +1,1693 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إدارة الطلبات الروحانية</title>
+    <meta name="theme-color" content="#312e81"/>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="assets/icon-192.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #4338ca;
+            --secondary-color: #312e81;
+        }
+        body { font-family: 'Cairo', 'sans-serif'; }
+        .tab-button.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        .kanban-column {
+            min-width: 300px;
+            width: 24%;
+        }
+        .dragging {
+            opacity: 0.5;
+            transform: rotate(2deg);
+        }
+        .drag-over {
+            border-style: dashed;
+            border-color: var(--primary-color);
+        }
+        /* Custom scrollbar for webkit browsers */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            #invoice-printable, #invoice-printable * {
+                visibility: visible;
+            }
+            #invoice-printable {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                margin: 0;
+                padding: 0;
+            }
+            #modal-content {
+                max-height: none;
+                overflow: visible;
+            }
+            .no-print {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+
+    <div id="app-container" class="min-h-screen flex flex-col">
+        <!-- Header -->
+        <header class="bg-indigo-900 text-white shadow-lg sticky top-0 z-20">
+            <div class="container mx-auto px-4 py-3 flex justify-between items-center">
+                <h1 class="text-xl font-bold">إدارة الطلبات</h1>
+                <div class="flex items-center space-s-2">
+                    <button id="install-button" class="hidden bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300">
+                        تثبيت التطبيق
+                    </button>
+                    <button id="notification-button" class="bg-teal-600 hover:bg-teal-700 text-white font-bold p-2 rounded-full transition duration-300" title="تفعيل الإشعارات">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                          <path d="M10 2a6 6 0 00-6 6v3.586l-1.707 1.707A1 1 0 003 15h14a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <nav class="bg-indigo-800">
+                <div class="container mx-auto px-4 flex justify-center space-s-1 overflow-x-auto">
+                    <button data-view="orders" class="tab-button active py-2 px-4 whitespace-nowrap">الطلبات</button>
+                    <button data-view="kanban" class="tab-button py-2 px-4 whitespace-nowrap">كانبان</button>
+                    <button data-view="dashboard" class="tab-button py-2 px-4 whitespace-nowrap">لوحة التحكم</button>
+                    <button data-view="reports" class="tab-button py-2 px-4 whitespace-nowrap">التقارير</button>
+                    <button data-view="expenses" class="tab-button py-2 px-4 whitespace-nowrap">المصروفات</button>
+                    <button data-view="settings" class="tab-button py-2 px-4 whitespace-nowrap">الإعدادات</button>
+                </div>
+            </nav>
+        </header>
+
+        <!-- Main Content -->
+        <main class="container mx-auto p-4 flex-grow">
+            <!-- Views will be rendered here -->
+            <div id="app-views"></div>
+        </main>
+
+        <!-- Footer -->
+        <footer class="bg-indigo-900 text-white text-center p-2 text-sm">
+            <p>&copy; 2025 - روح للخدمات الروحانية والعلاج الروحاني</p>
+        </footer>
+    </div>
+    
+    <!-- Toast Notification -->
+    <div id="toast-notification" class="fixed bottom-5 start-5 bg-green-500 text-white py-2 px-4 rounded-lg shadow-lg opacity-0 transition-opacity duration-300">
+        تم الحفظ بنجاح!
+    </div>
+
+    <!-- Modal -->
+    <div id="app-modal" class="fixed inset-0 bg-black bg-opacity-50 z-30 hidden items-center justify-center">
+        <div id="modal-content" class="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <!-- Modal content will be injected here -->
+        </div>
+    </div>
+
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+
+        const App = {
+            // STATE MANAGEMENT
+            state: {
+                currentView: 'orders',
+                orders: [],
+                expenses: [],
+                dict: {},
+                settings: {},
+                views: [],
+                recycle: [],
+                logs: [],
+                charts: {},
+                deferredInstallPrompt: null,
+            },
+
+            // DATABASE SETUP
+            db: {
+                orders: localforage.createInstance({ name: 'spiritualOrders', storeName: 'orders' }),
+                expenses: localforage.createInstance({ name: 'spiritualOrders', storeName: 'expenses' }),
+                dict: localforage.createInstance({ name: 'spiritualOrders', storeName: 'dict' }),
+                settings: localforage.createInstance({ name: 'spiritualOrders', storeName: 'settings' }),
+                views: localforage.createInstance({ name: 'spiritualOrders', storeName: 'views' }),
+                recycle: localforage.createInstance({ name: 'spiritualOrders', storeName: 'recycle' }),
+                logs: localforage.createInstance({ name: 'spiritualOrders', storeName: 'logs' }),
+            },
+
+            // INITIALIZATION
+            async init() {
+                this.registerServiceWorker();
+                this.setupEventListeners();
+                
+                await this.loadSettings();
+                await this.loadDictionaries();
+                await this.loadData();
+                await this.cleanupRecycleBin();
+                
+                this.render();
+                this.scheduleFollowUpNotifications();
+            },
+
+            async loadData() {
+                const [orders, expenses, views, recycle, logs] = await Promise.all([
+                    this.db.orders.getItem('data'),
+                    this.db.expenses.getItem('data'),
+                    this.db.views.getItem('data'),
+                    this.db.recycle.getItem('data'),
+                    this.db.logs.getItem('data'),
+                ]);
+                this.state.orders = orders || [];
+                this.state.expenses = expenses || [];
+                this.state.views = views || [];
+                this.state.recycle = recycle || [];
+                this.state.logs = logs || [];
+
+                // Add sample data if empty
+                if (this.state.orders.length === 0 && this.state.expenses.length === 0) {
+                    await this.addSampleData();
+                }
+            },
+            
+            async loadSettings() {
+                let settings = await this.db.settings.getItem('data');
+                // Schema 3 removes VAT
+                if (!settings || settings.schema < 3) {
+                    settings = {
+                        followWarnDays: 2,
+                        recycleKeepDays: 30,
+                        schema: 3
+                    };
+                    await this.db.settings.setItem('data', settings);
+                }
+                this.state.settings = settings;
+            },
+            
+            async loadDictionaries() {
+                let dict = await this.db.dict.getItem('data');
+                if (!dict) {
+                    dict = {
+                        services: ["كشف روحاني", "علاج", "مشتريات", "أخرى"],
+                        treatments: ["رقية شرعية", "تحصين", "جلسات طاقة", "متابعة علاجية"],
+                        products: ["حرز صغير", "حرز كبير", "باقة الطاقة - شهر", "باقة الطاقة - 3 أشهر"],
+                        channels: ["واتساب", "ميتا (فيسبوك)", "إنستجرام", "اتصال", "إحالة", "أخرى"],
+                        statuses: ["قيد التنفيذ", "مكتمل", "مرفوض", "مؤجل"],
+                        sales: ["أحمد", "سارة", "منى", "مصطفى"],
+                        healers: ["شيخ احمد", "شيخ عمرو", "شيخ علي"],
+                        expenseCategories: ["تسويق", "رواتب", "مستلزمات", "إيجار", "أخرى"]
+                    };
+                    await this.db.dict.setItem('data', dict);
+                }
+                this.state.dict = dict;
+            },
+            
+            async addSampleData() {
+                const sampleOrders = [
+                    { id: "202508-0001", date: "2025-08-01", customer: "علي محمد", phone: "966501234567", channel: "واتساب", service: "كشف روحاني", treatment: "", product: "", sales: "أحمد", healer: "", price: 200, discount: 0, status: "مكتمل", followup: "", notes: "استفسار عن طالع البرج.", diagnosis: "فحص مبدئي للحالة.", paid: 200 },
+                    { id: "202508-0002", date: "2025-08-03", customer: "فاطمة الزهراء", phone: "966502345678", channel: "ميتا (فيسبوك)", service: "علاج", treatment: "رقية شرعية", product: "", sales: "سارة", healer: "شيخ احمد", price: 800, discount: 50, status: "قيد التنفيذ", followup: "2025-08-10", notes: "تعاني من أرق مستمر.", diagnosis: "عوارض حسد وعين.", paid: 400 },
+                    { id: "202507-0001", date: "2025-07-15", customer: "خالد عبدالله", phone: "966503456789", channel: "إحالة", service: "مشتريات", treatment: "", product: "باقة الطاقة - 3 أشهر", sales: "أحمد", healer: "", price: 1500, discount: 100, status: "مكتمل", followup: "", notes: "تم شحن المنتج.", diagnosis: "", paid: 1400 },
+                    { id: "202508-0003", date: "2025-08-05", customer: "نورة سالم", phone: "966504567890", channel: "إنستجرام", service: "كشف روحاني", treatment: "", product: "", sales: "منى", healer: "", price: 200, discount: 0, status: "قيد التنفيذ", followup: "", notes: "تم الرد وتحتاج للتفكير.", diagnosis: "", paid: 0 },
+                    { id: "202508-0004", date: "2025-08-06", customer: "يوسف إبراهيم", phone: "966505678901", channel: "اتصال", service: "علاج", treatment: "جلسات طاقة", product: "", sales: "مصطفى", healer: "شيخ عمرو", price: 1200, discount: 0, status: "مؤجل", followup: "2025-09-01", notes: "طلب تأجيل بسبب السفر.", diagnosis: "تجديد طاقة وتحصين.", paid: 1200 },
+                    { id: "202507-0002", date: "2025-07-20", customer: "علي محمد", phone: "966501234567", channel: "واتساب", service: "مشتريات", treatment: "", product: "حرز صغير", sales: "أحمد", healer: "", price: 300, discount: 0, status: "مرفوض", followup: "", notes: "طلب مكرر، تم التواصل والإلغاء.", diagnosis: "", paid: 0 },
+                ];
+
+                for (const order of sampleOrders) {
+                    order.net = this.calculateTotals(order.price, order.discount).net;
+                }
+
+                this.state.orders = sampleOrders;
+                await this.db.orders.setItem('data', this.state.orders);
+
+                this.state.expenses = [
+                    { id: Date.now() + 1, date: "2025-08-01", item: "إعلان فيسبوك", category: "تسويق", amount: 500, notes: "حملة أغسطس" },
+                    { id: Date.now() + 2, date: "2025-08-02", item: "مستلزمات بخور", category: "مستلزمات", amount: 250, notes: "" },
+                    { id: Date.now() + 3, date: "2025-07-25", item: "راتب مساعد", category: "رواتب", amount: 2000, notes: "راتب شهر يوليو" },
+                ];
+                await this.db.expenses.setItem('data', this.state.expenses);
+            },
+            
+            // RENDERING ENGINE
+            render() {
+                const viewContainer = document.getElementById('app-views');
+                viewContainer.innerHTML = '';
+                
+                this.updateActiveTab();
+                
+                let viewContent = '';
+                switch(this.state.currentView) {
+                    case 'orders':
+                        viewContent = this.renderOrdersView();
+                        break;
+                    case 'kanban':
+                        viewContent = this.renderKanbanView();
+                        break;
+                    case 'dashboard':
+                        viewContent = this.renderDashboardView();
+                        break;
+                    case 'reports':
+                        viewContent = this.renderReportsView();
+                        break;
+                    case 'expenses':
+                        viewContent = this.renderExpensesView();
+                        break;
+                    case 'settings':
+                        viewContent = this.renderSettingsView();
+                        break;
+                }
+                viewContainer.innerHTML = viewContent;
+                this.postRender();
+            },
+
+            postRender() {
+                this.setupViewEventListeners();
+                if (this.state.currentView === 'dashboard') {
+                    this.renderDashboardCharts();
+                }
+            },
+            
+            updateActiveTab() {
+                document.querySelectorAll('.tab-button').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.view === this.state.currentView);
+                });
+            },
+            
+            // VIEWS
+            renderOrdersView() {
+                const filters = this.getCurrentFilters();
+                const filteredOrders = this.getFilteredOrders(filters);
+                const duplicatePhones = this.findDuplicatePhones();
+
+                const tableRows = filteredOrders.map(order => {
+                    const isDuplicate = duplicatePhones.has(order.phone);
+                    const isDeleted = order._deleted;
+                    const phoneLink = `https://wa.me/${order.phone.replace(/[^0-9]/g, '')}`;
+                    
+                    const { remaining, paymentStatusBadge } = this.getPaymentStatus(order);
+
+                    return `
+                        <tr class="border-b hover:bg-slate-50 ${isDeleted ? 'opacity-50 bg-red-50' : ''}">
+                            <td class="p-2 whitespace-nowrap"><input type="checkbox" class="bulk-checkbox" data-id="${order.id}"></td>
+                            <td class="p-2 whitespace-nowrap">${order.id}</td>
+                            <td class="p-2 whitespace-nowrap">${order.date}</td>
+                            <td class="p-2 whitespace-nowrap">${order.customer}</td>
+                            <td class="p-2 whitespace-nowrap">
+                                <div class="flex items-center">
+                                    <span>${order.phone}</span>
+                                    <a href="${phoneLink}" target="_blank" class="ms-2 text-green-500 hover:text-green-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M13.601 2.326A7.85 7.85 0 0 0 7.994 0C3.627 0 .068 3.558.064 7.926c0 1.399.366 2.76 1.057 3.965L0 16l4.204-1.102a7.9 7.9 0 0 0 3.79.965h.004c4.368 0 7.926-3.558 7.93-7.93A7.9 7.9 0 0 0 13.6 2.326zM7.994 14.521a6.6 6.6 0 0 1-3.356-.92l-.24-.144-2.494.654.666-2.433-.156-.251a6.56 6.56 0 0 1-1.007-3.505c0-3.626 2.957-6.584 6.591-6.584a6.56 6.56 0 0 1 4.66 1.931 6.56 6.56 0 0 1 1.928 4.66c-.004 3.639-2.961 6.592-6.592 6.592m3.615-4.934c-.197-.099-1.17-.578-1.353-.646-.182-.065-.315-.099-.445.099-.133.197-.513.646-.627.775-.114.133-.232.148-.43.05-.197-.1-.836-.308-1.592-.985-.59-.525-.985-1.175-1.103-1.372-.114-.198-.011-.304.088-.403.087-.088.197-.232.296-.346.1-.114.133-.198.198-.33.065-.134.034-.248-.015-.347-.05-.099-.445-1.076-.612-1.47-.16-.389-.323-.335-.445-.34-.114-.007-.247-.007-.38-.007a.73.73 0 0 0-.529.247c-.182.198-.691.677-.691 1.654s.71 1.916.81 2.049c.098.133 1.394 2.132 3.383 2.992.47.205.84.326 1.129.418.475.152.904.129 1.246.08.38-.058 1.171-.48 1.338-.943.164-.464.164-.86.114-.943-.049-.084-.182-.133-.38-.232z"/></svg>
+                                    </a>
+                                    ${isDuplicate ? `<span class="ms-2 text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded-full">مكرر</span>` : ''}
+                                </div>
+                            </td>
+                            <td class="p-2 whitespace-nowrap">${order.service}</td>
+                            <td class="p-2 whitespace-nowrap">${paymentStatusBadge}</td>
+                            <td class="p-2 whitespace-nowrap">${order.status}</td>
+                            <td class="p-2 whitespace-nowrap">${this.formatCurrency(order.net)}</td>
+                            <td class="p-2 whitespace-nowrap">${order.followup || 'لا يوجد'}</td>
+                            <td class="p-2 whitespace-nowrap">
+                                <button class="invoice-order-btn text-purple-500 hover:text-purple-700" data-id="${order.id}">فاتورة</button>
+                                ${isDeleted ? `
+                                    <button class="restore-order-btn text-blue-500 hover:text-blue-700 ms-2" data-id="${order.id}">استرجاع</button>
+                                ` : `
+                                    <button class="edit-order-btn text-blue-500 hover:text-blue-700 ms-2" data-id="${order.id}">تعديل</button>
+                                    <button class="delete-order-btn text-red-500 hover:red-blue-700 ms-2" data-id="${order.id}">حذف</button>
+                                `}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="bg-white p-4 rounded-lg shadow">
+                        <h2 class="text-2xl font-bold mb-4">قائمة الطلبات</h2>
+                        <!-- Filters -->
+                        <div id="filters" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4 bg-slate-50 p-4 rounded-lg">
+                            <input type="text" name="search" placeholder="بحث بالاسم/الهاتف/ملاحظات..." class="p-2 border rounded w-full" value="${filters.search || ''}">
+                            <input type="date" name="dateFrom" class="p-2 border rounded w-full" value="${filters.dateFrom || ''}">
+                            <input type="date" name="dateTo" class="p-2 border rounded w-full" value="${filters.dateTo || ''}">
+                            <select name="service" class="p-2 border rounded w-full">
+                                <option value="">كل الخدمات</option>
+                                ${this.state.dict.services.map(s => `<option value="${s}" ${filters.service === s ? 'selected' : ''}>${s}</option>`).join('')}
+                            </select>
+                            <select name="status" class="p-2 border rounded w-full">
+                                <option value="">كل الحالات</option>
+                                ${this.state.dict.statuses.map(s => `<option value="${s}" ${filters.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+                            </select>
+                             <select name="paymentStatus" class="p-2 border rounded w-full">
+                                <option value="">كل حالات الدفع</option>
+                                <option value="paid" ${filters.paymentStatus === 'paid' ? 'selected' : ''}>مدفوع بالكامل</option>
+                                <option value="partial" ${filters.paymentStatus === 'partial' ? 'selected' : ''}>مدفوع جزئياً</option>
+                                <option value="unpaid" ${filters.paymentStatus === 'unpaid' ? 'selected' : ''}>لم يدفع</option>
+                            </select>
+                            <select name="followup" class="p-2 border rounded w-full">
+                                <option value="">كل المتابعات</option>
+                                <option value="today" ${filters.followup === 'today' ? 'selected' : ''}>متابعات اليوم</option>
+                                <option value="week" ${filters.followup === 'week' ? 'selected' : ''}>متابعات الأسبوع</option>
+                                <option value="late" ${filters.followup === 'late' ? 'selected' : ''}>متابعات متأخرة</option>
+                            </select>
+                            <div class="flex items-center">
+                                <input type="checkbox" id="show-deleted" name="showDeleted" class="me-2" ${filters.showDeleted ? 'checked' : ''}>
+                                <label for="show-deleted">إظهار المحذوفات</label>
+                            </div>
+                        </div>
+                        <div class="flex justify-between items-center mb-4">
+                            <div>
+                                <button id="apply-filters-btn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">تطبيق الفلاتر</button>
+                                <button id="reset-filters-btn" class="bg-slate-500 text-white px-4 py-2 rounded-lg hover:bg-slate-600 ms-2">إعادة تعيين</button>
+                            </div>
+                            <button id="add-order-btn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">إضافة طلب جديد</button>
+                        </div>
+
+                        <!-- Bulk Actions -->
+                        <div id="bulk-actions-bar" class="hidden bg-blue-100 p-2 rounded-lg mb-4 flex items-center space-s-4">
+                             <span id="bulk-counter"></span>
+                             <button id="bulk-delete-btn" class="bg-red-500 text-white px-3 py-1 rounded">حذف المحدد</button>
+                             <button id="bulk-restore-btn" class="bg-blue-500 text-white px-3 py-1 rounded">استرجاع المحدد</button>
+                             <button id="bulk-merge-btn" class="bg-yellow-500 text-white px-3 py-1 rounded">دمج المكررات المحددة</button>
+                        </div>
+                        
+                        <!-- Table -->
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-right">
+                                <thead class="bg-slate-200">
+                                    <tr>
+                                        <th class="p-2"></th>
+                                        <th class="p-2">المعرف</th>
+                                        <th class="p-2">التاريخ</th>
+                                        <th class="p-2">العميل</th>
+                                        <th class="p-2">الهاتف</th>
+                                        <th class="p-2">الخدمة</th>
+                                        <th class="p-2">حالة الدفع</th>
+                                        <th class="p-2">حالة الطلب</th>
+                                        <th class="p-2">الصافي</th>
+                                        <th class="p-2">متابعة</th>
+                                        <th class="p-2">إجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${tableRows.length > 0 ? tableRows : `<tr><td colspan="11" class="text-center p-4">لا توجد طلبات تطابق البحث.</td></tr>`}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            },
+            
+            renderKanbanView() {
+                const statuses = this.state.dict.statuses;
+                const orders = this.state.orders.filter(o => !o._deleted);
+
+                const columns = statuses.map(status => {
+                    const cards = orders.filter(order => order.status === status).map(order => {
+                        const { paymentStatusBadge } = this.getPaymentStatus(order);
+                        return `
+                        <div class="bg-white p-3 rounded-lg shadow mb-3 kanban-card" draggable="true" data-id="${order.id}">
+                            <div class="flex justify-between items-start">
+                                <p class="font-bold">${order.customer}</p>
+                                ${paymentStatusBadge}
+                            </div>
+                            <p class="text-sm text-slate-600">${order.service}</p>
+                            <p class="text-sm text-slate-500">${order.id}</p>
+                            <div class="mt-2 text-xs flex justify-between items-center">
+                                <span>${order.sales}</span>
+                                <span class="font-bold">${this.formatCurrency(order.net)}</span>
+                            </div>
+                        </div>
+                    `}).join('');
+
+                    return `
+                        <div class="bg-slate-200 rounded-lg p-3 kanban-column flex-shrink-0" data-status="${status}">
+                            <h3 class="font-bold mb-3 text-center">${status} (${orders.filter(order => order.status === status).length})</h3>
+                            <div class="kanban-cards space-y-3 min-h-[100px]">
+                                ${cards}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                return `
+                    <div class="bg-white p-4 rounded-lg shadow">
+                        <h2 class="text-2xl font-bold mb-4">لوحة كانبان</h2>
+                        <div class="flex space-s-4 overflow-x-auto pb-4">
+                            ${columns}
+                        </div>
+                    </div>
+                `;
+            },
+            
+            renderDashboardView() {
+                return `
+                    <div class="bg-white p-4 rounded-lg shadow">
+                        <h2 class="text-2xl font-bold mb-4">لوحة التحكم</h2>
+                        
+                        <!-- KPIs -->
+                        <div id="kpis" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6"></div>
+
+                        <!-- Charts -->
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <div class="bg-slate-50 p-4 rounded-lg"><canvas id="serviceDistributionChart"></canvas></div>
+                            <div class="bg-slate-50 p-4 rounded-lg"><canvas id="monthlyRevenueChart"></canvas></div>
+                            <div class="bg-slate-50 p-4 rounded-lg"><canvas id="statusByServiceChart"></canvas></div>
+                            <div class="bg-slate-50 p-4 rounded-lg"><canvas id="dailyRevenueTrendChart"></canvas></div>
+                        </div>
+                    </div>
+                `;
+            },
+            
+            renderReportsView() {
+                 const orders = this.state.orders.filter(o => !o._deleted && o.status === 'مكتمل');
+                 const totalRevenue = orders.reduce((sum, o) => sum + o.net, 0);
+                 const totalCollected = orders.reduce((sum, o) => sum + (o.paid || 0), 0);
+                 const totalOrders = orders.length;
+
+                const aggregateData = (key) => {
+                    return orders.reduce((acc, order) => {
+                        const group = order[key];
+                        if (!group) return acc;
+                        if (!acc[group]) {
+                            acc[group] = { count: 0, sum: 0, paid: 0 };
+                        }
+                        acc[group].count++;
+                        acc[group].sum += order.net;
+                        acc[group].paid += (order.paid || 0);
+                        return acc;
+                    }, {});
+                };
+
+                const serviceReport = aggregateData('service');
+                const salesReport = aggregateData('sales');
+                const healerReport = aggregateData('healer');
+                const channelReport = aggregateData('channel');
+
+                const createReportTable = (title, data) => {
+                    return `
+                        <div class="bg-slate-50 p-4 rounded-lg">
+                            <h3 class="text-lg font-bold mb-2">${title}</h3>
+                            <table class="w-full text-sm">
+                                <thead class="bg-slate-200"><tr><th class="p-2 text-right">البند</th><th class="p-2">عدد الطلبات</th><th class="p-2">إجمالي الصافي</th><th class="p-2">إجمالي المدفوع</th></tr></thead>
+                                <tbody>
+                                    ${Object.entries(data).map(([key, value]) => `
+                                        <tr class="border-b"><td class="p-2">${key}</td><td>${value.count}</td><td>${this.formatCurrency(value.sum)}</td><td>${this.formatCurrency(value.paid)}</td></tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                };
+
+                return `
+                     <div class="bg-white p-4 rounded-lg shadow space-y-6">
+                        <h2 class="text-2xl font-bold">التقارير</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-center">
+                            <div class="bg-blue-100 p-4 rounded-lg">
+                                <p class="text-slate-600">إجمالي الإيرادات (مكتمل)</p>
+                                <p class="text-2xl font-bold">${this.formatCurrency(totalRevenue)}</p>
+                            </div>
+                             <div class="bg-purple-100 p-4 rounded-lg">
+                                <p class="text-slate-600">إجمالي المتحصلات (مكتمل)</p>
+                                <p class="text-2xl font-bold">${this.formatCurrency(totalCollected)}</p>
+                            </div>
+                             <div class="bg-green-100 p-4 rounded-lg">
+                                <p class="text-slate-600">إجمالي الطلبات (مكتمل)</p>
+                                <p class="text-2xl font-bold">${totalOrders}</p>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            ${createReportTable('التوزيع حسب الخدمة', serviceReport)}
+                            ${createReportTable('التوزيع حسب المبيعات', salesReport)}
+                            ${createReportTable('التوزيع حسب المعالج', healerReport)}
+                            ${createReportTable('التوزيع حسب القناة', channelReport)}
+                        </div>
+                    </div>
+                `;
+            },
+            
+            renderExpensesView() {
+                const expenses = this.state.expenses.slice().sort((a,b) => new Date(b.date) - new Date(a.date));
+
+                const tableRows = expenses.map(exp => `
+                    <tr class="border-b hover:bg-slate-50">
+                        <td class="p-2">${exp.date}</td>
+                        <td class="p-2">${exp.item}</td>
+                        <td class="p-2">${exp.category}</td>
+                        <td class="p-2">${this.formatCurrency(exp.amount)}</td>
+                        <td class="p-2">${exp.notes || '-'}</td>
+                        <td class="p-2">
+                            <button class="edit-expense-btn text-blue-500 hover:text-blue-700" data-id="${exp.id}">تعديل</button>
+                            <button class="delete-expense-btn text-red-500 hover:red-blue-700 ms-2" data-id="${exp.id}">حذف</button>
+                        </td>
+                    </tr>
+                `).join('');
+
+                return `
+                    <div class="bg-white p-4 rounded-lg shadow">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-2xl font-bold">سجل المصروفات</h2>
+                            <button id="add-expense-btn" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700">إضافة مصروف جديد</button>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-right">
+                                <thead class="bg-slate-200">
+                                    <tr>
+                                        <th class="p-2">التاريخ</th>
+                                        <th class="p-2">البند</th>
+                                        <th class="p-2">التصنيف</th>
+                                        <th class="p-2">المبلغ</th>
+                                        <th class="p-2">ملاحظات</th>
+                                        <th class="p-2">إجراءات</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${tableRows.length > 0 ? tableRows : `<tr><td colspan="6" class="text-center p-4">لا توجد مصروفات مسجلة.</td></tr>`}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            },
+            
+            renderSettingsView() {
+                const recycleBinItems = this.state.recycle.map(item => `
+                    <div class="border p-2 rounded flex justify-between items-center">
+                        <span>[${item.type}] ${item.data.customer || item.data.item || item.data.id} - حُذف في: ${new Date(item.deletedAt).toLocaleDateString('ar-EG')}</span>
+                        <button class="restore-item-btn bg-blue-500 text-white px-3 py-1 rounded" data-id="${item.id}">استرجاع</button>
+                    </div>
+                `).join('');
+
+                return `
+                <div class="bg-white p-4 rounded-lg shadow space-y-8">
+                    <h2 class="text-2xl font-bold mb-4">الإعدادات</h2>
+
+                    <!-- General Settings -->
+                    <div id="general-settings">
+                        <h3 class="text-lg font-bold border-b pb-2 mb-4">الإعدادات العامة</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label for="setting-followup" class="block text-sm font-medium text-slate-700">أيام التنبيه للمتابعة (قبل)</label>
+                                <input type="number" id="setting-followup" value="${this.state.settings.followWarnDays}" class="mt-1 p-2 border rounded w-full">
+                            </div>
+                            <div>
+                                <label for="setting-recycle" class="block text-sm font-medium text-slate-700">مدة الاحتفاظ بالمحذوفات (يوم)</label>
+                                <input type="number" id="setting-recycle" value="${this.state.settings.recycleKeepDays}" class="mt-1 p-2 border rounded w-full">
+                            </div>
+                        </div>
+                        <button id="save-settings-btn" class="mt-4 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">حفظ الإعدادات</button>
+                    </div>
+
+                    <!-- Data Dictionary -->
+                    <div id="dictionary-settings">
+                        <h3 class="text-lg font-bold border-b pb-2 mb-4">قاموس البيانات</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            ${this.renderDictionaryEditor('sales', 'أسماء موظفي المبيعات')}
+                            ${this.renderDictionaryEditor('healers', 'أسماء المعالجين')}
+                            ${this.renderDictionaryEditor('services', 'الخدمات')}
+                            ${this.renderDictionaryEditor('products', 'المنتجات/الباقات')}
+                            ${this.renderDictionaryEditor('treatments', 'طرق العلاج')}
+                            ${this.renderDictionaryEditor('channels', 'قنوات التواصل')}
+                            ${this.renderDictionaryEditor('expenseCategories', 'تصنيفات المصروفات')}
+                        </div>
+                         <button id="save-dict-btn" class="mt-4 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">حفظ القاموس</button>
+                    </div>
+
+                    <!-- Backup & Restore -->
+                    <div id="backup-restore">
+                         <h3 class="text-lg font-bold border-b pb-2 mb-4">النسخ الاحتياطي والاستعادة</h3>
+                         <div class="flex space-s-4">
+                             <button id="export-json-btn" class="bg-blue-600 text-white px-4 py-2 rounded-lg">تصدير JSON</button>
+                             <label class="bg-blue-600 text-white px-4 py-2 rounded-lg cursor-pointer">
+                                 <span>استيراد JSON</span>
+                                 <input type="file" id="import-json-input" class="hidden" accept=".json">
+                             </label>
+                             <button id="export-excel-btn" class="bg-green-600 text-white px-4 py-2 rounded-lg">تصدير Excel</button>
+                         </div>
+                    </div>
+
+                    <!-- Recycle Bin -->
+                    <div id="recycle-bin">
+                        <h3 class="text-lg font-bold border-b pb-2 mb-4">سلة المحذوفات</h3>
+                        <div class="space-y-2 max-h-60 overflow-y-auto bg-slate-50 p-2 rounded">
+                            ${recycleBinItems.length > 0 ? recycleBinItems : '<p class="text-slate-500">سلة المحذوفات فارغة.</p>'}
+                        </div>
+                    </div>
+                </div>
+                `;
+            },
+            
+            renderDictionaryEditor(key, title) {
+                const items = this.state.dict[key] || [];
+                return `
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700">${title}</label>
+                        <textarea data-dict-key="${key}" class="mt-1 p-2 border rounded w-full h-24">${items.join('\n')}</textarea>
+                        <p class="text-xs text-slate-500">كل عنصر في سطر جديد.</p>
+                    </div>
+                `;
+            },
+
+            // MODALS
+            openOrderModal(orderId = null) {
+                const order = orderId ? this.state.orders.find(o => o.id === orderId) : {};
+                const isNew = !orderId;
+                const modalContent = document.getElementById('modal-content');
+
+                modalContent.innerHTML = `
+                    <h2 class="text-2xl font-bold mb-4">${isNew ? 'إضافة طلب جديد' : 'تعديل طلب'}</h2>
+                    <form id="order-form" class="space-y-4">
+                        <input type="hidden" id="order-id" value="${order.id || ''}">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <label for="customer" class="block text-sm font-medium">اسم العميل*</label>
+                                <input type="text" id="customer" value="${order.customer || ''}" required class="mt-1 p-2 border rounded w-full">
+                            </div>
+                            <div>
+                                <label for="phone" class="block text-sm font-medium">رقم الهاتف*</label>
+                                <input type="tel" id="phone" value="${order.phone || ''}" required class="mt-1 p-2 border rounded w-full">
+                                <p id="phone-error" class="text-red-500 text-xs mt-1 hidden">رقم الهاتف هذا مستخدم بالفعل.</p>
+                            </div>
+                            <div>
+                                <label for="date" class="block text-sm font-medium">تاريخ الطلب*</label>
+                                <input type="date" id="date" value="${order.date || new Date().toISOString().split('T')[0]}" required class="mt-1 p-2 border rounded w-full">
+                            </div>
+                            <div>
+                                <label for="channel" class="block text-sm font-medium">قناة التواصل*</label>
+                                <select id="channel" required class="mt-1 p-2 border rounded w-full">
+                                    ${this.state.dict.channels.map(c => `<option value="${c}" ${order.channel === c ? 'selected' : ''}>${c}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label for="service" class="block text-sm font-medium">الخدمة*</label>
+                                <select id="service" required class="mt-1 p-2 border rounded w-full">
+                                    ${this.state.dict.services.map(s => `<option value="${s}" ${order.service === s ? 'selected' : ''}>${s}</option>`).join('')}
+                                </select>
+                            </div>
+                             <div>
+                                <label for="sales" class="block text-sm font-medium">موظف المبيعات*</label>
+                                <select id="sales" required class="mt-1 p-2 border rounded w-full">
+                                     ${this.state.dict.sales.map(s => `<option value="${s}" ${order.sales === s ? 'selected' : ''}>${s}</option>`).join('')}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div id="service-fields" class="grid grid-cols-1 md:grid-cols-2 gap-4 border-t pt-4">
+                            <!-- Fields for 'علاج' -->
+                            <div id="treatment-group" class="hidden">
+                                <label for="treatment" class="block text-sm font-medium">نوع العلاج*</label>
+                                <select id="treatment" class="mt-1 p-2 border rounded w-full">
+                                    <option value="">اختر نوع العلاج</option>
+                                    ${this.state.dict.treatments.map(t => `<option value="${t}" ${order.treatment === t ? 'selected' : ''}>${t}</option>`).join('')}
+                                </select>
+                            </div>
+                             <div id="healer-group" class="hidden">
+                                <label for="healer" class="block text-sm font-medium">المعالج*</label>
+                                <select id="healer" class="mt-1 p-2 border rounded w-full">
+                                    <option value="">اختر المعالج</option>
+                                    ${this.state.dict.healers.map(h => `<option value="${h}" ${order.healer === h ? 'selected' : ''}>${h}</option>`).join('')}
+                                </select>
+                            </div>
+                            <!-- Field for 'مشتريات' -->
+                            <div id="product-group" class="hidden">
+                                <label for="product" class="block text-sm font-medium">المنتج/الباقة*</label>
+                                <select id="product" class="mt-1 p-2 border rounded w-full">
+                                     <option value="">اختر المنتج</option>
+                                     ${this.state.dict.products.map(p => `<option value="${p}" ${order.product === p ? 'selected' : ''}>${p}</option>`).join('')}
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div>
+                             <label for="diagnosis" class="block text-sm font-medium">التشخيص</label>
+                             <textarea id="diagnosis" rows="2" class="mt-1 p-2 border rounded w-full">${order.diagnosis || ''}</textarea>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 border-t pt-4">
+                             <div>
+                                <label for="price" class="block text-sm font-medium">السعر</label>
+                                <input type="number" id="price" value="${order.price || 0}" step="0.01" class="mt-1 p-2 border rounded w-full">
+                            </div>
+                            <div>
+                                <label for="discount" class="block text-sm font-medium">الخصم</label>
+                                <input type="number" id="discount" value="${order.discount || 0}" step="0.01" class="mt-1 p-2 border rounded w-full">
+                            </div>
+                            <div>
+                                <label for="paid" class="block text-sm font-medium">المدفوع</label>
+                                <input type="number" id="paid" value="${order.paid || 0}" step="0.01" class="mt-1 p-2 border rounded w-full">
+                            </div>
+                            <div>
+                                <label for="remaining" class="block text-sm font-medium">المتبقي</label>
+                                <input type="number" id="remaining" value="0" readonly class="mt-1 p-2 border rounded w-full bg-slate-100">
+                            </div>
+                        </div>
+
+                         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 border-t pt-4">
+                             <div>
+                                <label for="status" class="block text-sm font-medium">الحالة*</label>
+                                <select id="status" required class="mt-1 p-2 border rounded w-full">
+                                     ${this.state.dict.statuses.map(s => `<option value="${s}" ${order.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label for="followup" class="block text-sm font-medium">تاريخ المتابعة</label>
+                                <input type="date" id="followup" value="${order.followup || ''}" class="mt-1 p-2 border rounded w-full">
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <label for="notes" class="block text-sm font-medium">ملاحظات</label>
+                            <textarea id="notes" rows="3" class="mt-1 p-2 border rounded w-full">${order.notes || ''}</textarea>
+                        </div>
+                        
+                        <div class="flex justify-end space-s-4 pt-4 border-t">
+                            <button type="button" id="close-modal-btn" class="bg-slate-500 text-white px-4 py-2 rounded-lg hover:bg-slate-600">إلغاء</button>
+                            <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">حفظ</button>
+                        </div>
+                    </form>
+                `;
+                
+                document.getElementById('app-modal').classList.remove('hidden');
+                document.getElementById('app-modal').classList.add('flex');
+                
+                this.setupOrderFormListeners();
+                document.getElementById('service').dispatchEvent(new Event('change'));
+                // Trigger initial calculation for remaining amount
+                document.getElementById('price').dispatchEvent(new Event('input'));
+            },
+            
+            openExpenseModal(expenseId = null) {
+                const expense = expenseId ? this.state.expenses.find(e => e.id === expenseId) : {};
+                const isNew = !expenseId;
+                const modalContent = document.getElementById('modal-content');
+                
+                modalContent.innerHTML = `
+                    <h2 class="text-2xl font-bold mb-4">${isNew ? 'إضافة مصروف جديد' : 'تعديل مصروف'}</h2>
+                     <form id="expense-form" class="space-y-4">
+                        <input type="hidden" id="expense-id" value="${expense.id || ''}">
+                         <div>
+                            <label for="expense-date" class="block text-sm font-medium">التاريخ*</label>
+                            <input type="date" id="expense-date" value="${expense.date || new Date().toISOString().split('T')[0]}" required class="mt-1 p-2 border rounded w-full">
+                        </div>
+                        <div>
+                            <label for="expense-item" class="block text-sm font-medium">البند*</label>
+                            <input type="text" id="expense-item" value="${expense.item || ''}" required class="mt-1 p-2 border rounded w-full">
+                        </div>
+                        <div>
+                            <label for="expense-category" class="block text-sm font-medium">التصنيف*</label>
+                            <select id="expense-category" required class="mt-1 p-2 border rounded w-full">
+                                ${this.state.dict.expenseCategories.map(c => `<option value="${c}" ${expense.category === c ? 'selected' : ''}>${c}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div>
+                            <label for="expense-amount" class="block text-sm font-medium">المبلغ*</label>
+                            <input type="number" id="expense-amount" value="${expense.amount || 0}" required step="0.01" class="mt-1 p-2 border rounded w-full">
+                        </div>
+                        <div>
+                            <label for="expense-notes" class="block text-sm font-medium">ملاحظات</label>
+                            <textarea id="expense-notes" rows="2" class="mt-1 p-2 border rounded w-full">${expense.notes || ''}</textarea>
+                        </div>
+                        <div class="flex justify-end space-s-4 pt-4 border-t">
+                            <button type="button" id="close-modal-btn" class="bg-slate-500 text-white px-4 py-2 rounded-lg hover:bg-slate-600">إلغاء</button>
+                            <button type="submit" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">حفظ</button>
+                        </div>
+                    </form>
+                `;
+
+                document.getElementById('app-modal').classList.remove('hidden');
+                document.getElementById('app-modal').classList.add('flex');
+                 this.setupExpenseFormListeners();
+            },
+            
+            openInvoiceModal(orderId) {
+                const order = this.state.orders.find(o => o.id === orderId);
+                if (!order) return;
+                
+                const { remaining } = this.getPaymentStatus(order);
+                const modalContent = document.getElementById('modal-content');
+
+                modalContent.innerHTML = `
+                    <div id="invoice-printable">
+                        <div class="p-8 border-b-8 border-indigo-800">
+                             <div class="flex justify-between items-start mb-8">
+                                <div>
+                                    <h1 class="text-3xl font-bold text-indigo-800">فاتورة خدمات</h1>
+                                    <p class="text-slate-600">روح للخدمات الروحانية والعلاج الروحاني</p>
+                                </div>
+                                <div class="text-left">
+                                    <p class="font-bold">رقم الفاتورة: ${order.id}</p>
+                                    <p>تاريخ الإصدار: ${new Date().toLocaleDateString('ar-EG')}</p>
+                                    <p>تاريخ الطلب: ${new Date(order.date).toLocaleDateString('ar-EG')}</p>
+                                </div>
+                            </div>
+                             <div class="mb-8">
+                                <h3 class="text-lg font-bold mb-2 border-b pb-1">بيانات العميل:</h3>
+                                <p><span class="font-semibold">الاسم:</span> ${order.customer}</p>
+                                <p><span class="font-semibold">الهاتف:</span> ${order.phone}</p>
+                            </div>
+                            <table class="w-full mb-8">
+                                <thead class="bg-indigo-100">
+                                    <tr>
+                                        <th class="p-2 text-right">الخدمة / المنتج</th>
+                                        <th class="p-2 text-right">المعالج</th>
+                                        <th class="p-2 text-center">التشخيص</th>
+                                        <th class="p-2 text-left">المبلغ</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr class="border-b">
+                                        <td class="p-2">${order.service}${order.product ? ` - ${order.product}` : ''}</td>
+                                        <td class="p-2">${order.healer || 'لا يوجد'}</td>
+                                        <td class="p-2 text-center">${order.diagnosis || '-'}</td>
+                                        <td class="p-2 text-left">${this.formatCurrency(order.price)}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                            <div class="flex justify-end">
+                                <div class="w-full md:w-1/3">
+                                    <div class="flex justify-between py-1"><span class="font-semibold">المجموع الفرعي:</span><span>${this.formatCurrency(order.price)}</span></div>
+                                    <div class="flex justify-between py-1"><span class="font-semibold">الخصم:</span><span>-${this.formatCurrency(order.discount)}</span></div>
+                                    <div class="flex justify-between py-2 border-t border-b font-bold text-lg"><span class="font-semibold">الإجمالي:</span><span>${this.formatCurrency(order.net)}</span></div>
+                                    <div class="flex justify-between py-1 text-green-600"><span class="font-semibold">المدفوع:</span><span>${this.formatCurrency(order.paid)}</span></div>
+                                    <div class="flex justify-between py-1 text-red-600 font-bold"><span class="font-semibold">المتبقي:</span><span>${this.formatCurrency(remaining)}</span></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                     <div class="flex justify-end space-s-4 pt-4 no-print">
+                        <button type="button" id="close-modal-btn" class="bg-slate-500 text-white px-4 py-2 rounded-lg hover:bg-slate-600">إغلاق</button>
+                        <button type="button" id="print-invoice-btn" class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700">طباعة</button>
+                    </div>
+                `;
+
+                document.getElementById('app-modal').classList.remove('hidden');
+                document.getElementById('app-modal').classList.add('flex');
+
+                document.getElementById('close-modal-btn').addEventListener('click', () => this.closeModal());
+                document.getElementById('print-invoice-btn').addEventListener('click', () => window.print());
+            },
+
+            closeModal() {
+                document.getElementById('app-modal').classList.add('hidden');
+                document.getElementById('app-modal').classList.remove('flex');
+                document.getElementById('modal-content').innerHTML = '';
+            },
+
+            // EVENT LISTENERS
+            setupEventListeners() {
+                document.querySelector('nav').addEventListener('click', e => {
+                    if (e.target.matches('.tab-button')) {
+                        this.state.currentView = e.target.dataset.view;
+                        this.render();
+                    }
+                });
+                
+                window.addEventListener('beforeinstallprompt', e => {
+                    e.preventDefault();
+                    this.state.deferredInstallPrompt = e;
+                    document.getElementById('install-button').classList.remove('hidden');
+                });
+
+                document.getElementById('install-button').addEventListener('click', async () => {
+                    if (this.state.deferredInstallPrompt) {
+                        this.state.deferredInstallPrompt.prompt();
+                        const { outcome } = await this.state.deferredInstallPrompt.userChoice;
+                        if (outcome === 'accepted') {
+                            console.log('User accepted the A2HS prompt');
+                        }
+                        this.state.deferredInstallPrompt = null;
+                        document.getElementById('install-button').classList.add('hidden');
+                    }
+                });
+
+                document.getElementById('notification-button').addEventListener('click', () => {
+                    this.requestNotificationPermission();
+                });
+            },
+            
+            setupViewEventListeners() {
+                const view = this.state.currentView;
+
+                if (view === 'orders') {
+                    document.getElementById('add-order-btn')?.addEventListener('click', () => this.openOrderModal());
+                    document.querySelector('#app-views table')?.addEventListener('click', e => {
+                        if (e.target.matches('.edit-order-btn')) this.openOrderModal(e.target.dataset.id);
+                        if (e.target.matches('.invoice-order-btn')) this.openInvoiceModal(e.target.dataset.id);
+                        if (e.target.matches('.delete-order-btn')) {
+                            if (confirm('هل أنت متأكد من رغبتك في حذف هذا الطلب؟')) this.deleteOrder(e.target.dataset.id);
+                        }
+                        if (e.target.matches('.restore-order-btn')) this.restoreOrder(e.target.dataset.id);
+                    });
+                    document.getElementById('apply-filters-btn')?.addEventListener('click', () => this.render());
+                    document.getElementById('reset-filters-btn')?.addEventListener('click', () => {
+                        document.querySelectorAll('#filters input, #filters select').forEach(el => {
+                            if (el.type === 'checkbox') el.checked = false;
+                            else el.value = '';
+                        });
+                        this.render();
+                    });
+                    this.setupBulkActionsListeners();
+                }
+
+                if (view === 'kanban') this.setupKanbanDragDrop();
+
+                if (view === 'expenses') {
+                    document.getElementById('add-expense-btn')?.addEventListener('click', () => this.openExpenseModal());
+                    document.querySelector('#app-views table')?.addEventListener('click', e => {
+                        if (e.target.matches('.edit-expense-btn')) this.openExpenseModal(Number(e.target.dataset.id));
+                        if (e.target.matches('.delete-expense-btn')) {
+                            if (confirm('هل أنت متأكد من رغبتك في حذف هذا المصروف؟')) this.deleteExpense(Number(e.target.dataset.id));
+                        }
+                    });
+                }
+                
+                if (view === 'settings') {
+                    document.getElementById('save-settings-btn')?.addEventListener('click', () => this.saveSettings());
+                    document.getElementById('save-dict-btn')?.addEventListener('click', () => this.saveDictionaries());
+                    document.getElementById('export-json-btn')?.addEventListener('click', () => this.exportToJson());
+                    document.getElementById('export-excel-btn')?.addEventListener('click', () => this.exportToExcel());
+                    document.getElementById('import-json-input')?.addEventListener('change', (e) => this.importFromJson(e));
+                    document.getElementById('recycle-bin')?.addEventListener('click', e => {
+                         if (e.target.matches('.restore-item-btn')) this.restoreItem(e.target.dataset.id);
+                    });
+                }
+            },
+            
+            setupBulkActionsListeners() {
+                const selectAll = document.getElementById('select-all-checkbox');
+                if (!selectAll) return; // FIX: Prevent error on other views.
+
+                const checkboxes = document.querySelectorAll('.bulk-checkbox');
+                const bulkActionBar = document.getElementById('bulk-actions-bar');
+                const bulkCounter = document.getElementById('bulk-counter');
+
+                const updateBulkActionBar = () => {
+                    const selected = document.querySelectorAll('.bulk-checkbox:checked');
+                    if (selected.length > 0) {
+                        bulkActionBar.classList.remove('hidden');
+                        bulkCounter.textContent = `${selected.length} عناصر محددة`;
+                    } else {
+                        bulkActionBar.classList.add('hidden');
+                    }
+                };
+
+                selectAll.addEventListener('change', () => {
+                    checkboxes.forEach(cb => cb.checked = selectAll.checked);
+                    updateBulkActionBar();
+                });
+
+                checkboxes.forEach(cb => {
+                    cb.addEventListener('change', () => {
+                        if (!cb.checked) selectAll.checked = false;
+                        updateBulkActionBar();
+                    });
+                });
+                
+                document.getElementById('bulk-delete-btn')?.addEventListener('click', () => this.handleBulkAction('delete'));
+                document.getElementById('bulk-restore-btn')?.addEventListener('click', () => this.handleBulkAction('restore'));
+                document.getElementById('bulk-merge-btn')?.addEventListener('click', () => this.handleBulkAction('merge'));
+            },
+            
+            setupOrderFormListeners() {
+                document.getElementById('order-form').addEventListener('submit', e => {
+                    e.preventDefault();
+                    this.saveOrder();
+                });
+                document.getElementById('close-modal-btn').addEventListener('click', () => this.closeModal());
+                
+                const serviceSelect = document.getElementById('service');
+                const priceInput = document.getElementById('price');
+                const discountInput = document.getElementById('discount');
+                const paidInput = document.getElementById('paid');
+
+                serviceSelect.addEventListener('change', (e) => {
+                    const service = e.target.value;
+                    const treatmentGroup = document.getElementById('treatment-group');
+                    const healerGroup = document.getElementById('healer-group');
+                    const productGroup = document.getElementById('product-group');
+                    const treatmentInput = document.getElementById('treatment');
+                    const healerInput = document.getElementById('healer');
+                    const productInput = document.getElementById('product');
+
+                    treatmentGroup.classList.add('hidden');
+                    healerGroup.classList.add('hidden');
+                    productGroup.classList.add('hidden');
+                    treatmentInput.required = false;
+                    healerInput.required = false;
+                    productInput.required = false;
+
+                    if (service === 'علاج') {
+                        treatmentGroup.classList.remove('hidden');
+                        healerGroup.classList.remove('hidden');
+                        treatmentInput.required = true;
+                        healerInput.required = true;
+                    } else if (service === 'مشتريات') {
+                        productGroup.classList.remove('hidden');
+                        productInput.required = true;
+                    }
+                });
+
+                const updateTotals = () => {
+                    const price = parseFloat(priceInput.value) || 0;
+                    const discount = parseFloat(discountInput.value) || 0;
+                    const paid = parseFloat(paidInput.value) || 0;
+                    const { remaining } = this.calculateTotals(price, discount, paid);
+                    document.getElementById('remaining').value = remaining.toFixed(2);
+                };
+
+                priceInput.addEventListener('input', updateTotals);
+                discountInput.addEventListener('input', updateTotals);
+                paidInput.addEventListener('input', updateTotals);
+                
+                document.getElementById('phone').addEventListener('input', e => {
+                    const phone = e.target.value;
+                    const id = document.getElementById('order-id').value;
+                    if (this.isPhoneDuplicate(phone, id)) {
+                         document.getElementById('phone-error').classList.remove('hidden');
+                    } else {
+                         document.getElementById('phone-error').classList.add('hidden');
+                    }
+                });
+            },
+
+            setupExpenseFormListeners() {
+                document.getElementById('expense-form').addEventListener('submit', e => {
+                    e.preventDefault();
+                    this.saveExpense();
+                });
+                 document.getElementById('close-modal-btn').addEventListener('click', () => this.closeModal());
+            },
+
+            setupKanbanDragDrop() {
+                const cards = document.querySelectorAll('.kanban-card');
+                const columns = document.querySelectorAll('.kanban-column');
+                let draggedCard = null;
+
+                cards.forEach(card => {
+                    card.addEventListener('dragstart', () => {
+                        draggedCard = card;
+                        setTimeout(() => card.classList.add('dragging'), 0);
+                    });
+                    card.addEventListener('dragend', () => {
+                        card.classList.remove('dragging');
+                        draggedCard = null;
+                    });
+                });
+
+                columns.forEach(column => {
+                    column.addEventListener('dragover', e => e.preventDefault());
+                    column.addEventListener('dragenter', e => { e.preventDefault(); column.classList.add('drag-over'); });
+                    column.addEventListener('dragleave', () => column.classList.remove('drag-over'));
+                    column.addEventListener('drop', async e => {
+                        e.preventDefault();
+                        column.classList.remove('drag-over');
+                        if (draggedCard) {
+                            const newStatus = column.dataset.status;
+                            const orderId = draggedCard.dataset.id;
+                            const order = this.state.orders.find(o => o.id === orderId);
+                            if (order && order.status !== newStatus) {
+                                const oldStatus = order.status;
+                                order.status = newStatus;
+                                await this.db.orders.setItem('data', this.state.orders);
+                                await this.logAction('status-change', { id: order.id, customer: order.customer, from: oldStatus, to: newStatus });
+                                this.showToast('تم تحديث الحالة بنجاح');
+                                this.render();
+                            }
+                        }
+                    });
+                });
+            },
+
+            // DATA LOGIC & CRUD
+            async saveOrder() {
+                const id = document.getElementById('order-id').value;
+                const phone = document.getElementById('phone').value;
+                
+                if (this.isPhoneDuplicate(phone, id)) {
+                    alert('رقم الهاتف مستخدم بالفعل لعميل آخر.');
+                    return;
+                }
+
+                const price = parseFloat(document.getElementById('price').value) || 0;
+                const discount = parseFloat(document.getElementById('discount').value) || 0;
+                const { net } = this.calculateTotals(price, discount, 0);
+
+                let orderData = {
+                    customer: document.getElementById('customer').value,
+                    phone: phone,
+                    date: document.getElementById('date').value,
+                    channel: document.getElementById('channel').value,
+                    service: document.getElementById('service').value,
+                    sales: document.getElementById('sales').value,
+                    treatment: document.getElementById('treatment').value,
+                    healer: document.getElementById('healer').value,
+                    product: document.getElementById('product').value,
+                    diagnosis: document.getElementById('diagnosis').value,
+                    price: price,
+                    discount: discount,
+                    net: net,
+                    paid: parseFloat(document.getElementById('paid').value) || 0,
+                    status: document.getElementById('status').value,
+                    followup: document.getElementById('followup').value,
+                    notes: document.getElementById('notes').value,
+                };
+                
+                if (id) { // Update
+                    const index = this.state.orders.findIndex(o => o.id === id);
+                    this.state.orders[index] = { ...this.state.orders[index], ...orderData };
+                    await this.logAction('update', { id, customer: orderData.customer });
+                } else { // Create
+                    orderData.id = await this.generateOrderId(orderData.date);
+                    this.state.orders.push(orderData);
+                    await this.logAction('create', { id: orderData.id, customer: orderData.customer });
+                }
+
+                await this.db.orders.setItem('data', this.state.orders);
+                this.closeModal();
+                this.render();
+                this.showToast();
+                this.scheduleFollowUpNotifications();
+            },
+            
+            async deleteOrder(id) {
+                const index = this.state.orders.findIndex(o => o.id === id);
+                if (index > -1) {
+                    const order = this.state.orders[index];
+                    order._deleted = true;
+                    this.state.recycle.push({
+                        id: `order_${order.id}`,
+                        type: 'order',
+                        deletedAt: new Date().toISOString(),
+                        data: order
+                    });
+                    
+                    await this.db.orders.setItem('data', this.state.orders);
+                    await this.db.recycle.setItem('data', this.state.recycle);
+                    await this.logAction('delete', { id: order.id, customer: order.customer });
+
+                    this.render();
+                    this.showToast('تم نقل الطلب إلى سلة المحذوفات');
+                }
+            },
+
+            async restoreOrder(id) {
+                const index = this.state.orders.findIndex(o => o.id === id);
+                if (index > -1) {
+                    const order = this.state.orders[index];
+                    delete order._deleted;
+
+                    this.state.recycle = this.state.recycle.filter(item => item.id !== `order_${id}`);
+
+                    await this.db.orders.setItem('data', this.state.orders);
+                    await this.db.recycle.setItem('data', this.state.recycle);
+                    await this.logAction('restore', { id: order.id, customer: order.customer });
+                    
+                    this.render();
+                    this.showToast('تم استرجاع الطلب بنجاح');
+                }
+            },
+            
+            async saveExpense() {
+                const id = Number(document.getElementById('expense-id').value);
+                const expenseData = {
+                    date: document.getElementById('expense-date').value,
+                    item: document.getElementById('expense-item').value,
+                    category: document.getElementById('expense-category').value,
+                    amount: parseFloat(document.getElementById('expense-amount').value),
+                    notes: document.getElementById('expense-notes').value,
+                };
+
+                if (id) { // Update
+                    const index = this.state.expenses.findIndex(e => e.id === id);
+                    this.state.expenses[index] = { ...this.state.expenses[index], ...expenseData };
+                } else { // Create
+                    expenseData.id = Date.now();
+                    this.state.expenses.push(expenseData);
+                }
+
+                await this.db.expenses.setItem('data', this.state.expenses);
+                this.closeModal();
+                this.render();
+                this.showToast('تم حفظ المصروف بنجاح');
+            },
+
+            async deleteExpense(id) {
+                 const expense = this.state.expenses.find(e => e.id === id);
+                 if (expense) {
+                    this.state.recycle.push({
+                        id: `expense_${id}`,
+                        type: 'expense',
+                        deletedAt: new Date().toISOString(),
+                        data: expense
+                    });
+                     this.state.expenses = this.state.expenses.filter(e => e.id !== id);
+                    await this.db.expenses.setItem('data', this.state.expenses);
+                    await this.db.recycle.setItem('data', this.state.recycle);
+                    this.render();
+                    this.showToast('تم نقل المصروف لسلة المحذوفات');
+                 }
+            },
+            
+            async saveSettings() {
+                this.state.settings.followWarnDays = parseInt(document.getElementById('setting-followup').value) || 1;
+                this.state.settings.recycleKeepDays = parseInt(document.getElementById('setting-recycle').value) || 30;
+                await this.db.settings.setItem('data', this.state.settings);
+                this.showToast('تم حفظ الإعدادات');
+            },
+            
+            async saveDictionaries() {
+                document.querySelectorAll('textarea[data-dict-key]').forEach(textarea => {
+                    const key = textarea.dataset.dictKey;
+                    this.state.dict[key] = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+                });
+                await this.db.dict.setItem('data', this.state.dict);
+                this.showToast('تم حفظ القاموس');
+            },
+            
+            async handleBulkAction(action) {
+                const selectedIds = [...document.querySelectorAll('.bulk-checkbox:checked')].map(cb => cb.dataset.id);
+                if (selectedIds.length === 0) return;
+
+                if (action === 'delete') {
+                    if (confirm(`هل أنت متأكد من حذف ${selectedIds.length} طلبات؟`)) {
+                        for (const id of selectedIds) await this.deleteOrder(id);
+                    }
+                } else if (action === 'restore') {
+                    for (const id of selectedIds) await this.restoreOrder(id);
+                } else if (action === 'merge') {
+                    if (confirm(`هل أنت متأكد من دمج الطلبات المكررة المحددة؟ سيتم الاحتفاظ بأحدث طلب ودمج الملاحظات.`)) {
+                         await this.mergeSelectedDuplicates(selectedIds);
+                    }
+                }
+                this.render();
+            },
+
+            async mergeSelectedDuplicates(selectedIds) {
+                const selectedOrders = this.state.orders.filter(o => selectedIds.includes(o.id));
+                const ordersByPhone = selectedOrders.reduce((acc, order) => {
+                    (acc[order.phone] = acc[order.phone] || []).push(order);
+                    return acc;
+                }, {});
+
+                for (const phone in ordersByPhone) {
+                    let ordersToMerge = ordersByPhone[phone];
+                    if (ordersToMerge.length < 2) continue;
+
+                    ordersToMerge.sort((a, b) => new Date(b.date) - new Date(a.date) || b.id.localeCompare(a.id));
+                    
+                    const primaryOrder = ordersToMerge[0];
+                    const notesToMerge = ordersToMerge.slice(1).map(o => [o.notes, o.diagnosis].filter(Boolean).join(' - ')).filter(Boolean);
+                    
+                    if (notesToMerge.length > 0) {
+                        primaryOrder.notes = [primaryOrder.notes, ...notesToMerge].filter(Boolean).join('\n---\n');
+                    }
+
+                    const idsToDelete = ordersToMerge.slice(1).map(o => o.id);
+                    for (const id of idsToDelete) {
+                        await this.deleteOrder(id);
+                    }
+
+                    const index = this.state.orders.findIndex(o => o.id === primaryOrder.id);
+                    this.state.orders[index] = primaryOrder;
+                }
+                await this.db.orders.setItem('data', this.state.orders);
+                await this.logAction('merge', { count: selectedIds.length });
+                this.showToast('تم دمج المكررات المحددة.');
+            },
+            
+            async restoreItem(itemId) {
+                const item = this.state.recycle.find(i => i.id === itemId);
+                if (!item) return;
+
+                if (item.type === 'order') {
+                    delete item.data._deleted;
+                    const index = this.state.orders.findIndex(o => o.id === item.data.id);
+                    if (index > -1) this.state.orders[index] = item.data;
+                    else this.state.orders.push(item.data);
+                    await this.db.orders.setItem('data', this.state.orders);
+                    await this.logAction('restore', { id: item.data.id, customer: item.data.customer });
+                } else if (item.type === 'expense') {
+                    this.state.expenses.push(item.data);
+                    await this.db.expenses.setItem('data', this.state.expenses);
+                }
+                
+                this.state.recycle = this.state.recycle.filter(i => i.id !== itemId);
+                await this.db.recycle.setItem('data', this.state.recycle);
+                this.render();
+                this.showToast('تم استرجاع العنصر.');
+            },
+            
+            async cleanupRecycleBin() {
+                const keepDays = this.state.settings.recycleKeepDays;
+                const cutoffDate = new Date();
+                cutoffDate.setDate(cutoffDate.getDate() - keepDays);
+
+                const initialCount = this.state.recycle.length;
+                this.state.recycle = this.state.recycle.filter(item => new Date(item.deletedAt) > cutoffDate);
+                
+                if (this.state.recycle.length < initialCount) {
+                     await this.db.recycle.setItem('data', this.state.recycle);
+                     console.log(`Cleaned up ${initialCount - this.state.recycle.length} items from recycle bin.`);
+                }
+            },
+
+            // HELPERS
+            async generateOrderId(dateString) {
+                const date = new Date(dateString);
+                const year = date.getFullYear();
+                const month = (date.getMonth() + 1).toString().padStart(2, '0');
+                const prefix = `${year}${month}-`;
+                
+                const monthOrders = this.state.orders.filter(o => o.id.startsWith(prefix));
+                const maxId = monthOrders.reduce((max, o) => {
+                    const num = parseInt(o.id.split('-')[1]);
+                    return num > max ? num : max;
+                }, 0);
+
+                return `${prefix}${(maxId + 1).toString().padStart(4, '0')}`;
+            },
+
+            calculateTotals(price, discount, paid) {
+                const net = Math.max(0, price - discount);
+                const remaining = net - paid;
+                return { net, remaining };
+            },
+            
+            getPaymentStatus(order) {
+                let paymentStatusBadge = '';
+                let statusKey = '';
+                const remaining = order.net - (order.paid || 0);
+                if (order.net <= 0) {
+                     paymentStatusBadge = `<span class="text-xs bg-slate-200 text-slate-800 px-2 py-0.5 rounded-full">مجاني</span>`;
+                     statusKey = 'free';
+                } else if (remaining <= 0) {
+                    paymentStatusBadge = `<span class="text-xs bg-green-200 text-green-800 px-2 py-0.5 rounded-full">مدفوع بالكامل</span>`;
+                    statusKey = 'paid';
+                } else if (order.paid > 0) {
+                    paymentStatusBadge = `<span class="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded-full">مدفوع جزئياً</span>`;
+                    statusKey = 'partial';
+                } else {
+                    paymentStatusBadge = `<span class="text-xs bg-red-200 text-red-800 px-2 py-0.5 rounded-full">لم يدفع</span>`;
+                    statusKey = 'unpaid';
+                }
+                return { remaining, paymentStatusBadge, statusKey };
+            },
+
+            isPhoneDuplicate(phone, currentId) {
+                if (!phone) return false;
+                return this.state.orders.some(o => !o._deleted && o.phone === phone && o.id !== currentId);
+            },
+            
+            findDuplicatePhones() {
+                const phoneCounts = this.state.orders
+                    .filter(o => !o._deleted && o.phone)
+                    .reduce((acc, o) => {
+                        acc[o.phone] = (acc[o.phone] || 0) + 1;
+                        return acc;
+                    }, {});
+                return new Set(Object.keys(phoneCounts).filter(p => phoneCounts[p] > 1));
+            },
+
+            getFilteredOrders(filters) {
+                 return this.state.orders.filter(order => {
+                    if (!filters.showDeleted && order._deleted) return false;
+                    if (filters.search) {
+                        const term = filters.search.toLowerCase();
+                        if (!(order.customer.toLowerCase().includes(term) || order.phone.includes(term) || (order.notes && order.notes.toLowerCase().includes(term)) || order.id.includes(term))) {
+                            return false;
+                        }
+                    }
+                    if (filters.dateFrom && order.date < filters.dateFrom) return false;
+                    if (filters.dateTo && order.date > filters.dateTo) return false;
+                    if (filters.service && order.service !== filters.service) return false;
+                    if (filters.status && order.status !== filters.status) return false;
+                    if (filters.paymentStatus) {
+                        const { statusKey } = this.getPaymentStatus(order);
+                        if(statusKey !== filters.paymentStatus) return false;
+                    }
+                    if (filters.followup) {
+                        const today = new Date().toISOString().split('T')[0];
+                        if (filters.followup === 'today' && order.followup !== today) return false;
+                        if (filters.followup === 'late' && (!order.followup || order.followup >= today)) return false;
+                        if (filters.followup === 'week') {
+                            const nextWeek = new Date();
+                            nextWeek.setDate(nextWeek.getDate() + 7);
+                            const nextWeekStr = nextWeek.toISOString().split('T')[0];
+                            if (!order.followup || order.followup < today || order.followup > nextWeekStr) return false;
+                        }
+                    }
+                    return true;
+                }).sort((a,b) => new Date(b.date) - new Date(a.date) || b.id.localeCompare(a.id));
+            },
+            
+            getCurrentFilters() {
+                const filtersDiv = document.getElementById('filters');
+                if (!filtersDiv) return {};
+                const inputs = filtersDiv.querySelectorAll('input, select');
+                const filters = {};
+                inputs.forEach(input => {
+                    filters[input.name] = input.type === 'checkbox' ? input.checked : input.value;
+                });
+                return filters;
+            },
+            
+            formatCurrency(amount) {
+                return new Intl.NumberFormat('ar-EG', { style: 'currency', currency: 'EGP' }).format(amount || 0);
+            },
+            
+            showToast(message = 'تم الحفظ بنجاح!', type = 'success') {
+                const toast = document.getElementById('toast-notification');
+                toast.textContent = message;
+                toast.className = `fixed bottom-5 start-5 text-white py-2 px-4 rounded-lg shadow-lg opacity-0 transition-opacity duration-300 ${type === 'success' ? 'bg-green-500' : 'bg-red-500'}`;
+                toast.classList.remove('opacity-0');
+                setTimeout(() => {
+                    toast.classList.add('opacity-0');
+                }, 3000);
+            },
+            
+            async logAction(action, details) {
+                this.state.logs.unshift({
+                    timestamp: new Date().toISOString(),
+                    action,
+                    details
+                });
+                if (this.state.logs.length > 200) this.state.logs.pop();
+                await this.db.logs.setItem('data', this.state.logs);
+            },
+
+            // PWA & NOTIFICATIONS
+            registerServiceWorker() {
+                if ('serviceWorker' in navigator) {
+                    window.addEventListener('load', () => {
+                        navigator.serviceWorker.register('service-worker.js')
+                            .then(registration => console.log('Service Worker registered:', registration))
+                            .catch(error => console.log('Service Worker registration failed:', error));
+                    });
+                }
+            },
+            
+            async requestNotificationPermission() {
+                if (!("Notification" in window)) {
+                    alert("هذا المتصفح لا يدعم الإشعارات.");
+                    return;
+                }
+                const permission = await Notification.requestPermission();
+                if (permission === "granted") {
+                    this.showToast("تم تفعيل الإشعارات بنجاح.", "success");
+                    new Notification("أهلاً بك!", { body: "ستصلك الآن تنبيهات مواعيد المتابعة." });
+                } else {
+                     this.showToast("تم رفض إذن الإشعارات.", "error");
+                }
+            },
+
+            scheduleFollowUpNotifications() {
+                if (!("Notification" in window) || Notification.permission !== 'granted') return;
+                const today = new Date();
+                const warnDays = this.state.settings.followWarnDays;
+                
+                const upcomingFollowups = this.state.orders.filter(order => {
+                    if (!order.followup || order._deleted || order.status !== 'قيد التنفيذ') return false;
+                    const followupDate = new Date(order.followup);
+                    const diffTime = followupDate - today;
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                    return diffDays >= 0 && diffDays <= warnDays;
+                });
+                
+                const lateFollowups = this.state.orders.filter(order => {
+                    if (!order.followup || order._deleted || order.status !== 'قيد التنفيذ') return false;
+                     const followupDate = new Date(order.followup);
+                     return followupDate < today && !this.isSameDay(followupDate, today);
+                });
+
+                if (upcomingFollowups.length > 0) {
+                     new Notification(`لديك ${upcomingFollowups.length} متابعات قادمة`, {
+                        body: `لديك متابعات لعملاء مثل "${upcomingFollowups[0].customer}" خلال ${warnDays} أيام القادمة.`
+                     });
+                }
+                if (lateFollowups.length > 0) {
+                     new Notification(`تنبيه: ${lateFollowups.length} متابعات متأخرة`, {
+                        body: `لديك متابعات متأخرة لعملاء مثل "${lateFollowups[0].customer}".`
+                     });
+                }
+            },
+
+            isSameDay(d1, d2) {
+                return d1.getFullYear() === d2.getFullYear() &&
+                       d1.getMonth() === d2.getMonth() &&
+                       d1.getDate() === d2.getDate();
+            },
+
+            // CHARTS (DASHBOARD)
+            destroyCharts() {
+                Object.values(this.state.charts).forEach(chart => chart.destroy());
+                this.state.charts = {};
+            },
+
+            renderDashboardCharts() {
+                this.destroyCharts();
+                const completedOrders = this.state.orders.filter(o => !o._deleted && o.status === 'مكتمل');
+                const allOrders = this.state.orders.filter(o => !o._deleted);
+                
+                // KPIs
+                const totalNetRevenue = completedOrders.reduce((sum, o) => sum + o.net, 0);
+                const totalCollected = this.state.orders.filter(o => !o._deleted).reduce((sum, o) => sum + (o.paid || 0), 0);
+                const totalExpenses = this.state.expenses.reduce((sum, e) => sum + e.amount, 0);
+                const netProfit = totalCollected - totalExpenses;
+
+                document.getElementById('kpis').innerHTML = `
+                    <div class="bg-blue-100 p-4 rounded-lg text-center"><p class="text-slate-600">إجمالي الإيرادات (المكتملة)</p><p class="text-2xl font-bold">${this.formatCurrency(totalNetRevenue)}</p></div>
+                    <div class="bg-purple-100 p-4 rounded-lg text-center"><p class="text-slate-600">إجمالي المتحصلات</p><p class="text-2xl font-bold">${this.formatCurrency(totalCollected)}</p></div>
+                    <div class="bg-green-100 p-4 rounded-lg text-center"><p class="text-slate-600">صافي الربح</p><p class="text-2xl font-bold">${this.formatCurrency(netProfit)}</p></div>
+                    <div class="bg-yellow-100 p-4 rounded-lg text-center"><p class="text-slate-600">إجمالي الطلبات</p><p class="text-2xl font-bold">${allOrders.length}</p></div>
+                `;
+
+                // Chart 1: Service Distribution (Pie)
+                const serviceData = this.state.dict.services.map(service => allOrders.filter(o => o.service === service).length);
+                this.state.charts.serviceChart = new Chart('serviceDistributionChart', {
+                    type: 'pie', data: { labels: this.state.dict.services, datasets: [{ data: serviceData, backgroundColor: ['#4f46e5', '#7c3aed', '#db2777', '#f97316'] }] },
+                    options: { responsive: true, plugins: { title: { display: true, text: 'توزيع الطلبات حسب الخدمة' } } }
+                });
+
+                // Chart 2: Monthly Collected (Bar)
+                const monthlyCollected = {};
+                this.state.orders.filter(o => !o._deleted && o.paid > 0).forEach(o => {
+                    const month = o.date.substring(0, 7); // YYYY-MM
+                    monthlyCollected[month] = (monthlyCollected[month] || 0) + o.paid;
+                });
+                const sortedMonths = Object.keys(monthlyCollected).sort();
+                this.state.charts.revenueChart = new Chart('monthlyRevenueChart', {
+                    type: 'bar', data: { labels: sortedMonths, datasets: [{ label: 'المتحصلات الشهرية', data: sortedMonths.map(m => monthlyCollected[m]), backgroundColor: '#16a34a' }] },
+                    options: { responsive: true, plugins: { title: { display: true, text: 'المتحصلات الشهرية' } } }
+                });
+                
+                // Chart 3: Status by Service (Stacked Bar)
+                const services = this.state.dict.services;
+                const statuses = this.state.dict.statuses;
+                const statusByServiceData = {
+                    labels: services,
+                    datasets: statuses.map((status, i) => ({
+                        label: status,
+                        data: services.map(service => allOrders.filter(o => o.service === service && o.status === status).length),
+                        backgroundColor: ['#2563eb', '#16a34a', '#dc2626', '#f59e0b'][i]
+                    }))
+                };
+                 this.state.charts.statusByServiceChart = new Chart('statusByServiceChart', {
+                    type: 'bar', data: statusByServiceData,
+                    options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true } }, plugins: { title: { display: true, text: 'حالة الطلبات حسب الخدمة' } } }
+                });
+
+                // Chart 4: Daily Collected Trend (Line)
+                const dailyCollected = {};
+                this.state.orders.filter(o => !o._deleted && o.paid > 0 && new Date(o.date) > new Date(new Date().setDate(new Date().getDate() - 30)))
+                    .forEach(o => {
+                        dailyCollected[o.date] = (dailyCollected[o.date] || 0) + o.paid;
+                    });
+                const sortedDays = Object.keys(dailyCollected).sort();
+                this.state.charts.dailyTrendChart = new Chart('dailyRevenueTrendChart', {
+                    type: 'line', data: { labels: sortedDays, datasets: [{ label: 'متحصلات آخر 30 يوم', data: sortedDays.map(d => dailyCollected[d]), borderColor: '#c026d3', tension: 0.1 }] },
+                     options: { responsive: true, plugins: { title: { display: true, text: 'ترند المتحصلات اليومي' } } }
+                });
+            },
+            
+            // IMPORT / EXPORT
+            async exportToJson() {
+                const dataToExport = {
+                    orders: await this.db.orders.getItem('data') || [],
+                    expenses: await this.db.expenses.getItem('data') || [],
+                    dict: await this.db.dict.getItem('data') || {},
+                    settings: await this.db.settings.getItem('data') || {},
+                    views: await this.db.views.getItem('data') || [],
+                    logs: await this.db.logs.getItem('data') || [],
+                };
+                const jsonString = JSON.stringify(dataToExport, null, 2);
+                const blob = new Blob([jsonString], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `backup-روح-للخدمات-${new Date().toISOString().split('T')[0]}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                this.showToast('تم تصدير البيانات بنجاح.');
+            },
+            
+            async importFromJson(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+                
+                if (!confirm('سيؤدي استيراد ملف جديد إلى الكتابة فوق جميع بياناتك الحالية. هل أنت متأكد أنك تريد المتابعة؟')) {
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = async (e) => {
+                    try {
+                        const data = JSON.parse(e.target.result);
+                        await this.db.orders.setItem('data', data.orders || []);
+                        await this.db.expenses.setItem('data', data.expenses || []);
+                        await this.db.dict.setItem('data', data.dict || {});
+                        await this.db.settings.setItem('data', data.settings || {});
+                        await this.db.views.setItem('data', data.views || []);
+                        await this.db.logs.setItem('data', data.logs || []);
+                        
+                        this.showToast('تم استيراد البيانات بنجاح. سيتم إعادة تحميل التطبيق.');
+                        setTimeout(() => window.location.reload(), 1500);
+                    } catch (error) {
+                        this.showToast('فشل استيراد الملف. تأكد من أنه ملف JSON صالح.', 'error');
+                        console.error('JSON Import Error:', error);
+                    }
+                };
+                reader.readAsText(file);
+            },
+            
+            exportToExcel() {
+                const ordersSheet = XLSX.utils.json_to_sheet(this.state.orders);
+                const expensesSheet = XLSX.utils.json_to_sheet(this.state.expenses);
+                const logsSheet = XLSX.utils.json_to_sheet(this.state.logs.map(l => ({...l, details: JSON.stringify(l.details)})));
+                
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ordersSheet, "الطلبات");
+                XLSX.utils.book_append_sheet(wb, expensesSheet, "المصروفات");
+                XLSX.utils.book_append_sheet(wb, logsSheet, "السجل");
+
+                XLSX.writeFile(wb, `export-روح-للخدمات-${new Date().toISOString().split('T')[0]}.xlsx`);
+                 this.showToast('تم تصدير ملف Excel بنجاح.');
+            }
+
+        };
+
+        App.init();
+
+    });
+    </script>
+</body>
+</html>
+
